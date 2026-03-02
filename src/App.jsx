@@ -52,17 +52,18 @@ export default function App() {
   }, [session]);
 
   async function sendLink() {
-    setMsg("");
-    try {
-      await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: window.location.origin },
-      });
-      setMsg("Check your email for the sign-in link.");
-    } catch (e) {
-      setMsg(e?.message ?? "Failed to send sign-in link.");
-    }
-  }
+	setMsg("");
+	try {
+	const { error } = await supabase.auth.signInWithOtp({
+	email,
+	options: { emailRedirectTo: window.location.origin },
+	});
+	if (error) throw error;
+	setMsg("Check your email for the sign-in link.");
+	} catch (e) {
+	setMsg(e?.message ?? "Failed to send sign-in link.");
+	}
+}
 
   async function loadAll() {
     const { data: b, error: be } = await supabase
