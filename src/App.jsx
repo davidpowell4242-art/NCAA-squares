@@ -37,6 +37,12 @@ export default function App() {
   // owner display lookup
   const [ownerNameByUserId, setOwnerNameByUserId] = useState({});
 
+  // Profile modal state
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [pfFirstName, setPfFirstName] = useState("");
+  const [pfLastInitial, setPfLastInitial] = useState("");
+  const [pfSaving, setPfSaving] = useState(false);
+
   // AUTH
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -52,18 +58,18 @@ export default function App() {
   }, [session]);
 
   async function sendLink() {
-	setMsg("");
-	try {
-	const { error } = await supabase.auth.signInWithOtp({
-	email,
-	options: { emailRedirectTo: window.location.origin },
-	});
-	if (error) throw error;
-	setMsg("Check your email for the sign-in link.");
-	} catch (e) {
-	setMsg(e?.message ?? "Failed to send sign-in link.");
-	}
-}
+    setMsg("");
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.origin },
+      });
+      if (error) throw error;
+      setMsg("Check your email for the sign-in link.");
+    } catch (e) {
+      setMsg(e?.message ?? "Failed to send sign-in link.");
+    }
+  }
 
   async function loadAll() {
     const { data: b, error: be } = await supabase
@@ -97,9 +103,21 @@ export default function App() {
         .eq("user_id", session.user.id)
         .single();
 
-      // Don't crash if profile doesn't exist yet
-      if (!pe) setProfile(p ?? null);
-      else setProfile(null);
+      if (!pe) {
+        setProfile(p ?? null);
+
+        // Show "complete profile" modal if missing name pieces
+        const missing = !p?.first_name || !p?.last_initial;
+        if (missing) {
+          setPfFirstName(p?.first_name ?? "");
+          setPfLastInitial((p?.last_initial ?? "").toUpperCase().slice(0, 1));
+          setShowProfileModal(true);
+        } else {
+          setShowProfileModal(false);
+        }
+      } else {
+        setProfile(null);
+      }
     }
 
     // Build owner name map for purchased squares
@@ -112,7 +130,6 @@ export default function App() {
       return;
     }
 
-    // Pull profile names for owners
     const { data: owners } = await supabase
       .from("profiles")
       .select("user_id,first_name,last_initial")
@@ -122,8 +139,7 @@ export default function App() {
     for (const o of owners ?? []) {
       const fn = (o.first_name ?? "").trim();
       const li = (o.last_initial ?? "").trim();
-      const label =
-        fn && li ? `${fn} ${li}` : fn ? fn : li ? li : null;
+      const label = fn && li ? `${fn} ${li}` : fn ? fn : li ? li : null;
       if (label) map[o.user_id] = label;
     }
     setOwnerNameByUserId(map);
@@ -182,14 +198,19 @@ export default function App() {
     return m;
   }, [holds]);
 
-  const myHeldSquareIds = useMemo(() => {
-    const set = new Set();
+  const myHeldSquares = useMemo(() => {
     const uid = session?.user?.id;
-    for (const h of holds) {
-      if (h.user_id === uid) set.add(h.square_id);
+    const mine = [];
+    for (const s of squares) {
+      const h = holdsBySquareId.get(s.id);
+      if (h && h.user_id === uid && !s.owner_user_id) {
+        mine.push(s);
+      }
     }
-    return set;
-  }, [holds, session]);
+    // stable display order
+    mine.sort((a, b) => (a.row - b.row) || (a.col - b.col));
+    return mine;
+  }, [squares, holdsBySquareId, session]);
 
   const counts = useMemo(() => {
     const purchased = squares.filter((s) => !!s.owner_user_id).length;
@@ -255,17 +276,63 @@ export default function App() {
   function displayOwner(square) {
     const uid = square.owner_user_id;
     if (!uid) return "";
-    // preferred: profile name
     const name = ownerNameByUserId[uid];
     if (name) return name;
 
-    // fallback: email prefix if owner is current user
+    // fallback
     if (session?.user?.id === uid && session?.user?.email) {
       return session.user.email.split("@")[0];
     }
-
-    // generic fallback
     return "Paid";
+  }
+
+  function squareLabel(sq) {
+    // show user-friendly row/col like "R3-C7"
+    return `R${sq.row}-${sq.col}`;
+  }
+
+  async function copyMySquares() {
+    try {
+      const text = myHeldSquares.map(squareLabel).join(", ") || "";
+      await navigator.clipboard.writeText(text);
+      setMsg("Copied your held squares to clipboard.");
+    } catch {
+      setMsg("Could not copy to clipboard.");
+    }
+  }
+
+  async function saveProfile() {
+    setMsg("");
+    const first = (pfFirstName ?? "").trim();
+    const liRaw = (pfLastInitial ?? "").trim();
+    const li = liRaw ? liRaw[0].toUpperCase() : "";
+
+    if (!first) {
+      setMsg("Please enter your first name.");
+      return;
+    }
+    if (!li) {
+      setMsg("Please enter your last initial.");
+      return;
+    }
+
+    setPfSaving(true);
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ first_name: first, last_initial: li })
+        .eq("user_id", session.user.id);
+
+      if (error) throw error;
+
+      setShowProfileModal(false);
+      setMsg("Profile saved.");
+      await loadAll(); // refresh owner map + profile
+    } catch (e) {
+      setMsg(e?.message ?? "Failed to save profile.");
+    } finally {
+      setPfSaving(false);
+    }
   }
 
   // ADMIN actions
@@ -333,7 +400,6 @@ export default function App() {
         return;
       }
 
-      // Lookup user id by email (admin RPC)
       const { data: buyerId, error: fe } = await supabase.rpc("admin_find_user_by_email", {
         p_email: buyerEmail.trim(),
       });
@@ -376,7 +442,6 @@ export default function App() {
       .login{display:flex;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap;}
       input, textarea, select{padding:10px;border-radius:10px;border:1px solid #ddd;}
       input{width:280px;}
-      textarea{width:280px;min-height:42px;resize:vertical;}
       button{padding:10px 12px;border-radius:10px;border:1px solid #ddd;background:#fff;cursor:pointer;}
       button:disabled{opacity:.6;cursor:not-allowed;}
       .msg{margin:10px 0;color:#333;}
@@ -400,6 +465,18 @@ export default function App() {
         font-size:13px;
       }
 
+      .info{
+        margin-bottom:12px;
+        padding:12px;
+        border:1px solid #e9e9e9;
+        border-radius:12px;
+        background:#fff;
+        line-height:1.35;
+        font-size:14px;
+      }
+      .info b{font-weight:800;}
+      .info .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;}
+
       .admin-panel{
         margin-top:14px;
         padding:12px;
@@ -414,7 +491,6 @@ export default function App() {
 
       .board-wrapper{margin-top:14px;}
 
-      /* 2-column layout: side label + main content */
       .board-layout{
         display:grid;
         grid-template-columns: 40px auto;
@@ -422,7 +498,6 @@ export default function App() {
         align-items:start;
       }
 
-      /* Vertically centered side label along the grid */
       .side-label{
         display:flex;
         align-items:center;
@@ -436,7 +511,6 @@ export default function App() {
 
       .content{display:block;}
 
-      /* Header grid matches board columns exactly */
       .top-grid{
         display:grid;
         grid-template-columns:42px repeat(10,42px);
@@ -444,7 +518,6 @@ export default function App() {
         margin-bottom:8px;
         align-items:center;
       }
-      /* Title spans only the 10 digit columns (excludes corner) */
       .top-title{
         grid-column:2 / 12;
         text-align:center;
@@ -477,7 +550,6 @@ export default function App() {
       .cell.mine{outline:3px solid #111;outline-offset:-3px;}
       .cell.purchased{background:#111;border-color:#111;}
 
-      /* show selected squares for admin */
       .cell.selected{
         outline:3px solid #2f6fff;
         outline-offset:-3px;
@@ -494,7 +566,7 @@ export default function App() {
         padding:3px;
         text-align:center;
         color:#fff;
-        font-weight:700;
+        font-weight:800;
         pointer-events:none;
       }
 
@@ -512,8 +584,40 @@ export default function App() {
       }
       .badge.mine{
         border-color:#111;
-        font-weight:700;
+        font-weight:800;
       }
+
+      /* Modal */
+      .modal-backdrop{
+        position:fixed;
+        inset:0;
+        background:rgba(0,0,0,.35);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        z-index:9999;
+        padding:18px;
+      }
+      .modal{
+        width:100%;
+        max-width:420px;
+        background:#fff;
+        border-radius:16px;
+        border:1px solid #eee;
+        box-shadow:0 12px 40px rgba(0,0,0,.18);
+        padding:16px;
+      }
+      .modal h2{margin:0 0 8px 0;}
+      .modal p{margin:0 0 12px 0;color:#555;line-height:1.35;}
+      .modal .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+      .modal input{width:100%;}
+      .modal .two{
+        display:grid;
+        grid-template-columns: 1fr 110px;
+        gap:10px;
+        margin-top:10px;
+      }
+      .modal .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
     `;
     const style = document.createElement("style");
     style.innerHTML = css;
@@ -542,6 +646,46 @@ export default function App() {
 
   return (
     <div className="page">
+      {/* Complete Profile Modal */}
+      {showProfileModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h2>Complete your profile</h2>
+            <p>
+              We use your name to display purchased squares (first name + last initial).
+            </p>
+
+            <div className="two">
+              <div>
+                <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>First name</div>
+                <input
+                  value={pfFirstName}
+                  onChange={(e) => setPfFirstName(e.target.value)}
+                  placeholder="First name"
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Last initial</div>
+                <input
+                  value={pfLastInitial}
+                  onChange={(e) =>
+                    setPfLastInitial(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1))
+                  }
+                  placeholder="L"
+                  maxLength={1}
+                />
+              </div>
+            </div>
+
+            <div className="actions">
+              <button onClick={saveProfile} disabled={pfSaving}>
+                {pfSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="topbar">
         <h1>{board?.name ?? "Board"}</h1>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -566,10 +710,38 @@ export default function App() {
         <div className="pill">Board status: <b>{board?.status ?? "-"}</b></div>
       </div>
 
+      {/* How to purchase instructions */}
+      <div className="info">
+        <div>
+          <b>How it works:</b> Click squares to <b>hold</b> them (temporary). To <b>purchase</b> your squares,
+          send payment to the organizer and include your held square IDs.
+        </div>
+
+        {myHeldSquares.length > 0 && (
+          <>
+            <div style={{ marginTop: 10 }}>
+              <b>Your held squares:</b> {myHeldSquares.map(squareLabel).join(", ")}
+            </div>
+            <div className="actions">
+              <button onClick={copyMySquares}>Copy my squares</button>
+            </div>
+            <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+              Your holds expire automatically — please pay/confirm before the timer runs out.
+            </div>
+          </>
+        )}
+
+        {myHeldSquares.length === 0 && (
+          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
+            Tip: Hold a few squares first — your hold countdown will appear on each square.
+          </div>
+        )}
+      </div>
+
       {profile?.is_admin && (
         <div className="admin-panel">
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-            <div style={{ fontWeight: 800 }}>Admin – Payment Tracking (Manual)</div>
+            <div style={{ fontWeight: 800 }}>Admin – Mark Purchased (Manual Payment)</div>
             <div className="pill">Selected squares: <b>{adminSelected.size}</b></div>
           </div>
 
@@ -592,17 +764,13 @@ export default function App() {
             <button className="primary" onClick={adminMarkPurchased} disabled={adminSelected.size === 0}>
               Mark Purchased
             </button>
-            <button
-              onClick={() => setAdminSelected(new Set())}
-              disabled={adminSelected.size === 0}
-            >
+            <button onClick={() => setAdminSelected(new Set())} disabled={adminSelected.size === 0}>
               Clear Selection
             </button>
           </div>
 
           <div className="admin-hint">
-            Click squares on the board to select them (purchased squares can’t be selected).
-            The buyer must log in at least once so they exist in Supabase Auth.
+            Click squares on the board to select them. Enter buyer email and mark purchased after you receive payment.
           </div>
         </div>
       )}
@@ -621,9 +789,7 @@ export default function App() {
               <div className="board">
                 <div className="corner" />
                 {topDigits.map((d, i) => (
-                  <div key={`col-${i}`} className="hdr">
-                    {d}
-                  </div>
+                  <div key={`col-${i}`} className="hdr">{d}</div>
                 ))}
 
                 {DIGITS.map((r) => (
@@ -638,18 +804,13 @@ export default function App() {
                       const countdown = holdCountdown(sq.id);
                       const isHeld = !!hold;
                       const isMine = isHeld && hold.user_id === session.user.id;
-
                       const selected = profile?.is_admin && adminSelected.has(sq.id);
 
-                      // Click behavior:
-                      // - Admin: if not purchased, click selects (even if held). If you want to block selecting held squares, we can.
-                      // - Non-admin: normal hold/unhold behavior.
                       const onClick = () => {
                         if (profile?.is_admin) toggleAdminSelect(sq);
                         else toggleSquare(sq);
                       };
 
-                      // Disable for non-admin when closed/purchased
                       const disabled =
                         !profile?.is_admin &&
                         (board?.status !== "open" || !!sq.owner_user_id);
@@ -662,7 +823,7 @@ export default function App() {
                           className={cls}
                           onClick={onClick}
                           disabled={disabled}
-                          title={`${r}-${c}`}
+                          title={`R${r}-C${c}`}
                         >
                           {sq.owner_user_id && (
                             <div className="cell-text">{displayOwner(sq)}</div>
@@ -681,9 +842,9 @@ export default function App() {
               </div>
             </div>
 
-            {!profile?.is_admin && myHeldSquareIds.size > 0 && (
+            {!profile?.is_admin && myHeldSquares.length > 0 && (
               <div className="admin-hint" style={{ marginTop: 10 }}>
-                You currently have <b>{myHeldSquareIds.size}</b> square(s) on hold. Holds expire automatically.
+                You have <b>{myHeldSquares.length}</b> square(s) on hold. Holds expire automatically.
               </div>
             )}
           </div>
