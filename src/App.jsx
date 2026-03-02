@@ -647,6 +647,7 @@ export default function App() {
           <b>Step 2:</b> Click <b>Purchase</b> to submit your selection (it becomes <b>Pending</b> and locks in).
           <br />
 	  <b>Step 3:</b> Send payment to Dave Powell via Venmo -- <b>@David_Powell_70)</b>
+	  <br />
           <b>Step 4:</b> Dave confirms payment and your squares become <b>Purchased</b>.
         </div>
 
