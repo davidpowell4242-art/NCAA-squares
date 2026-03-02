@@ -23,17 +23,17 @@ export default function App() {
 
   const [squares, setSquares] = useState([]);
   const [holds, setHolds] = useState([]);
-  const [orders, setOrders] = useState([]); // board orders (admin sees all, users see own)
-  const [orderItems, setOrderItems] = useState([]); // items for visible orders
+  const [orders, setOrders] = useState([]);
+  const [orderItems, setOrderItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [now, setNow] = useState(Date.now());
 
-  // admin payment fields for marking paid
+  // Admin payment fields for marking paid
   const [paymentMethod, setPaymentMethod] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
 
-  // owner display lookup
+  // Owner display lookup
   const [ownerNameByUserId, setOwnerNameByUserId] = useState({});
 
   // Profile modal
@@ -114,9 +114,7 @@ export default function App() {
       }
     }
 
-    // Orders visible:
-    // - non-admin: only own orders via RLS
-    // - admin: all orders via RLS
+    // Orders visible (RLS handles admin vs user)
     const { data: o, error: oe } = await supabase
       .from("orders")
       .select("id,board_id,user_id,status,created_at,paid_at,canceled_at,payment_method,payment_notes")
@@ -143,8 +141,6 @@ export default function App() {
 
     // Build owner name map for purchased + pending squares owners
     const ownerIds = new Set((s ?? []).map((x) => x.owner_user_id).filter(Boolean));
-
-    // also collect order user_ids for pending orders so we can show "Pending" name
     for (const ord of o ?? []) {
       if (ord?.user_id) ownerIds.add(ord.user_id);
     }
@@ -288,7 +284,7 @@ export default function App() {
     if (!session || !board) return;
     if (board.status !== "open") return;
     if (square.owner_user_id) return;
-    if (square.pending_order_id) return; // locked by an order
+    if (square.pending_order_id) return;
 
     setMsg("");
     const hold = holdsBySquareId.get(square.id);
@@ -305,6 +301,9 @@ export default function App() {
         const res = data?.[0];
         if (!res?.success) setMsg(`Could not hold: ${res?.reason ?? "unknown"}`);
       }
+
+      // Immediate refresh so highlight appears right away
+      await loadAll();
     } catch (e) {
       setMsg(e?.message ?? "Action failed.");
     }
@@ -361,8 +360,7 @@ export default function App() {
         p_board_id: BOARD_ID,
       });
       if (error) throw error;
-      setMsg(`Purchase submitted! Order pending payment.`);
-      // loadAll will refresh via realtime, but do it now for snappiness
+      setMsg("Purchase submitted! Order pending payment.");
       await loadAll();
     } catch (e) {
       setMsg(e?.message ?? "Could not submit purchase.");
@@ -384,11 +382,13 @@ export default function App() {
         .from("profiles")
         .update({ first_name: first, last_initial: li })
         .eq("user_id", session.user.id);
+
       if (error) throw error;
 
+      // Optimistic update so modal won't reopen due to fast refresh
+      setProfile((prev) => ({ ...(prev ?? {}), first_name: first, last_initial: li }));
       setShowProfileModal(false);
       setMsg("Profile saved.");
-      await loadAll();
     } catch (e) {
       setMsg(e?.message ?? "Failed to save profile.");
     } finally {
@@ -522,7 +522,7 @@ export default function App() {
 
       .cell{position:relative;width:42px;height:42px;border-radius:10px;border:1px solid #ddd;background:#fff;padding:0;}
       .cell.held{background:#efefef;}
-      .cell.mine{outline:3px solid #111;outline-offset:-3px;}
+      .cell.mine{outline:3px solid #111;outline-offset:-3px;background:#eaffea;}
       .cell.purchased{background:#111;border-color:#111;}
       .cell.pending{background:#2b2b2b;border-color:#2b2b2b;opacity:0.88;}
       .cell-text{
@@ -561,9 +561,7 @@ export default function App() {
     );
   }
 
-  const pendingOrdersAdmin = profile?.is_admin
-    ? orders.filter((o) => o.status === "pending")
-    : [];
+  const pendingOrdersAdmin = profile?.is_admin ? orders.filter((o) => o.status === "pending") : [];
 
   return (
     <div className="page">
@@ -582,7 +580,9 @@ export default function App() {
                 <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Last initial</div>
                 <input
                   value={pfLastInitial}
-                  onChange={(e) => setPfLastInitial(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1))}
+                  onChange={(e) =>
+                    setPfLastInitial(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1))
+                  }
                   placeholder="L"
                   maxLength={1}
                 />
@@ -665,9 +665,7 @@ export default function App() {
           </div>
 
           <div className="orders-list">
-            {pendingOrdersAdmin.length === 0 && (
-              <div className="admin-hint">No pending orders right now.</div>
-            )}
+            {pendingOrdersAdmin.length === 0 && <div className="admin-hint">No pending orders right now.</div>}
 
             {pendingOrdersAdmin.map((o) => {
               const buyerName = displayNameForUserId(o.user_id);
@@ -735,7 +733,7 @@ export default function App() {
                       board?.status !== "open" ||
                       !!sq.owner_user_id ||
                       !!sq.pending_order_id ||
-                      (hold && !isMine); // someone else holds it
+                      (hold && !isMine);
 
                     return (
                       <button
@@ -750,9 +748,7 @@ export default function App() {
                         )}
 
                         {!sq.owner_user_id && !sq.pending_order_id && countdown && (
-                          <div className={`badge${isMine ? " mine" : ""}`}>
-                            {countdown}
-                          </div>
+                          <div className={`badge${isMine ? " mine" : ""}`}>{countdown}</div>
                         )}
                       </button>
                     );
