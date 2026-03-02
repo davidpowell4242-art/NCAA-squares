@@ -356,7 +356,7 @@ export default function App() {
         setMsg("Hold one or more squares first.");
         return;
       }
-      const { data: orderId, error } = await supabase.rpc("create_order_from_holds", {
+      const { error } = await supabase.rpc("create_order_from_holds", {
         p_board_id: BOARD_ID,
       });
       if (error) throw error;
@@ -385,7 +385,6 @@ export default function App() {
 
       if (error) throw error;
 
-      // Optimistic update so modal won't reopen due to fast refresh
       setProfile((prev) => ({ ...(prev ?? {}), first_name: first, last_initial: li }));
       setShowProfileModal(false);
       setMsg("Profile saved.");
@@ -508,14 +507,34 @@ export default function App() {
       .order-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
 
       .board-wrapper{margin-top:14px;}
-      .board-layout{display:grid;grid-template-columns:40px auto;column-gap:12px;align-items:start;}
-      .side-label{display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;writing-mode:vertical-rl;transform:rotate(180deg);text-align:center;}
-      .content{display:block;}
 
-      .top-grid{display:grid;grid-template-columns:42px repeat(10,42px);gap:6px;margin-bottom:8px;align-items:center;}
+      /* Key change: two-row grid so Away Team centers ONLY beside the board grid */
+      .board-layout{
+        display:grid;
+        grid-template-columns:40px auto;
+        grid-template-rows:auto auto;
+        column-gap:12px;
+        row-gap:8px;
+        align-items:start;
+      }
+      .side-spacer{grid-column:1;grid-row:1;}
+      .top-grid{grid-column:2;grid-row:1;display:grid;grid-template-columns:42px repeat(10,42px);gap:6px;align-items:center;}
       .top-title{grid-column:2 / 12;text-align:center;font-weight:700;font-size:20px;}
+      .side-label{
+        grid-column:1;
+        grid-row:2;
+        align-self:stretch;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-weight:700;
+        font-size:20px;
+        writing-mode:vertical-rl;
+        transform:rotate(180deg);
+        text-align:center;
+      }
 
-      .board{display:grid;grid-template-columns:42px repeat(10,42px);grid-auto-rows:42px;gap:6px;}
+      .board{grid-column:2;grid-row:2;display:grid;grid-template-columns:42px repeat(10,42px);grid-auto-rows:42px;gap:6px;}
       .corner{width:42px;height:42px;}
       .hdr{display:flex;align-items:center;justify-content:center;font-weight:700;background:#f2f2f2;border-radius:10px;}
       .row{display:contents;}
@@ -703,59 +722,58 @@ export default function App() {
       {/* Board */}
       <div className="board-wrapper">
         <div className="board-layout">
+          <div className="side-spacer" />
+          <div className="top-grid">
+            <div className="corner" />
+            <div className="top-title">Home Team</div>
+          </div>
+
           <div className="side-label">Away Team</div>
 
-          <div className="content">
-            <div className="top-grid">
-              <div className="corner" />
-              <div className="top-title">Home Team</div>
-            </div>
+          <div className="board">
+            <div className="corner" />
+            {topDigits.map((d, i) => (
+              <div key={`col-${i}`} className="hdr">{d}</div>
+            ))}
 
-            <div className="board">
-              <div className="corner" />
-              {topDigits.map((d, i) => (
-                <div key={`col-${i}`} className="hdr">{d}</div>
-              ))}
+            {DIGITS.map((r) => (
+              <div key={`row-${r}`} className="row">
+                <div className="hdr">{sideDigits[r]}</div>
 
-              {DIGITS.map((r) => (
-                <div key={`row-${r}`} className="row">
-                  <div className="hdr">{sideDigits[r]}</div>
+                {DIGITS.map((c) => {
+                  const sq = squareMap.get(keyOf(r, c));
+                  if (!sq) return <div key={`missing-${r}-${c}`} className="cell" />;
 
-                  {DIGITS.map((c) => {
-                    const sq = squareMap.get(keyOf(r, c));
-                    if (!sq) return <div key={`missing-${r}-${c}`} className="cell" />;
+                  const hold = holdsBySquareId.get(sq.id);
+                  const countdown = holdCountdown(sq.id);
+                  const isMine = hold && hold.user_id === session.user.id;
 
-                    const hold = holdsBySquareId.get(sq.id);
-                    const countdown = holdCountdown(sq.id);
-                    const isMine = hold && hold.user_id === session.user.id;
+                  const disabled =
+                    board?.status !== "open" ||
+                    !!sq.owner_user_id ||
+                    !!sq.pending_order_id ||
+                    (hold && !isMine);
 
-                    const disabled =
-                      board?.status !== "open" ||
-                      !!sq.owner_user_id ||
-                      !!sq.pending_order_id ||
-                      (hold && !isMine);
+                  return (
+                    <button
+                      key={sq.id}
+                      className={classFor(sq)}
+                      onClick={() => toggleSquare(sq)}
+                      disabled={disabled}
+                      title={`R${r}-C${c}`}
+                    >
+                      {(sq.owner_user_id || sq.pending_order_id) && (
+                        <div className="cell-text">{displayCellText(sq)}</div>
+                      )}
 
-                    return (
-                      <button
-                        key={sq.id}
-                        className={classFor(sq)}
-                        onClick={() => toggleSquare(sq)}
-                        disabled={disabled}
-                        title={`R${r}-C${c}`}
-                      >
-                        {(sq.owner_user_id || sq.pending_order_id) && (
-                          <div className="cell-text">{displayCellText(sq)}</div>
-                        )}
-
-                        {!sq.owner_user_id && !sq.pending_order_id && countdown && (
-                          <div className={`badge${isMine ? " mine" : ""}`}>{countdown}</div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
+                      {!sq.owner_user_id && !sq.pending_order_id && countdown && (
+                        <div className={`badge${isMine ? " mine" : ""}`}>{countdown}</div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </div>
       </div>
